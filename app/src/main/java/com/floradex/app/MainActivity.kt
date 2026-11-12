@@ -727,7 +727,7 @@ fun BalconyScreen(
     }
 }
 
-// --- DIRECT GEMINI REST API CALL (USING GEMINI-3.8-FLASH) ---
+// --- DIRECT GEMINI REST API CALL (USING GEMINI-3.5-FLASH-LITE) ---
 suspend fun analyzePlantWithGeminiRest(
     bitmap: Bitmap,
     nextDexNum: Int,
@@ -767,7 +767,7 @@ suspend fun analyzePlantWithGeminiRest(
             ))
         }
 
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$apiKey")
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=$apiKey")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", "application/json")
