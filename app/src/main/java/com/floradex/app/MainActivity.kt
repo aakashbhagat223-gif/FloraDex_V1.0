@@ -557,7 +557,7 @@ fun ScannerScreen(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                 )
+         )
                     }
                 }
 
@@ -727,7 +727,7 @@ fun BalconyScreen(
     }
 }
 
-// --- DIRECT GEMINI REST API CALL (CRASH-FREE) ---
+// --- DIRECT GEMINI REST API CALL (USING GEMINI-3.8-FLASH) ---
 suspend fun analyzePlantWithGeminiRest(
     bitmap: Bitmap,
     nextDexNum: Int,
@@ -767,7 +767,7 @@ suspend fun analyzePlantWithGeminiRest(
             ))
         }
 
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey")
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$apiKey")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", "application/json")
