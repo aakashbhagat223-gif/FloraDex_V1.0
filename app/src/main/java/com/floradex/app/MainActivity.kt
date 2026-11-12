@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.LocalFlorist
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,11 +47,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
 import java.util.UUID
 
@@ -114,12 +120,15 @@ fun FloraDexApp(onSpeak: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var currentTab by remember { mutableStateOf(0) } // 0 = Scanner, 1 = My Balcony
+    var currentTab by remember { mutableStateOf(0) }
     var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isScanning by remember { mutableStateOf(false) }
     var activePlant by remember { mutableStateOf<PlantEntry?>(null) }
     var showHealthPanel by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    var apiKey by remember { mutableStateOf(getActiveApiKey(context)) }
+    var showApiKeyDialog by remember { mutableStateOf(apiKey.isBlank()) }
 
     var balconyPlants by remember { mutableStateOf(loadBalconyPlants(context)) }
 
@@ -128,11 +137,16 @@ fun FloraDexApp(onSpeak: (String) -> Unit) {
     ) { bitmap ->
         if (bitmap != null) {
             capturedBitmap = bitmap
+            if (apiKey.isBlank()) {
+                errorMessage = "API Key missing. Tap the Gear icon in the top-right to paste your Gemini API Key."
+                showApiKeyDialog = true
+                return@rememberLauncherForActivityResult
+            }
             isScanning = true
             errorMessage = null
             showHealthPanel = false
             scope.launch {
-                val result = analyzePlantWithGemini(bitmap, balconyPlants.size + 1)
+                val result = analyzePlantWithGeminiRest(bitmap, balconyPlants.size + 1, apiKey)
                 isScanning = false
                 result.onSuccess { entry ->
                     activePlant = entry
@@ -144,15 +158,30 @@ fun FloraDexApp(onSpeak: (String) -> Unit) {
         }
     }
 
+    if (showApiKeyDialog) {
+        ApiKeyDialog(
+            currentKey = apiKey,
+            onDismiss = { showApiKeyDialog = false },
+            onSave = { newKey ->
+                val cleaned = newKey.trim()
+                saveApiKey(context, cleaned)
+                apiKey = cleaned
+                showApiKeyDialog = false
+                errorMessage = null
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(DexBgDark)
     ) {
-        // --- POKEDEX HARDWARE TOP BEZEL ---
-        PokedexHeader(isScanning = isScanning)
+        PokedexHeader(
+            isScanning = isScanning,
+            onOpenSettings = { showApiKeyDialog = true }
+        )
 
-        // --- TAB BAR ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -172,7 +201,6 @@ fun FloraDexApp(onSpeak: (String) -> Unit) {
             ) { currentTab = 1 }
         }
 
-        // --- CONTENT AREA ---
         Box(modifier = Modifier.weight(1f)) {
             if (currentTab == 0) {
                 ScannerScreen(
@@ -213,7 +241,66 @@ fun FloraDexApp(onSpeak: (String) -> Unit) {
 }
 
 @Composable
-fun PokedexHeader(isScanning: Boolean) {
+fun ApiKeyDialog(
+    currentKey: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var text by remember { mutableStateOf(currentKey) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = DexCardDark,
+        title = {
+            Text(
+                text = "POKÉDEX AI CORE KEY",
+                color = DexCyan,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "Paste your Gemini API Key from Google AI Studio (aistudio.google.com):",
+                    color = Color.LightGray,
+                    fontSize = 13.sp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("AIzaSy...", color = Color.Gray) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = DexCyan,
+                        unfocusedBorderColor = Color.Gray,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(text) },
+                colors = ButtonDefaults.buttonColors(containerColor = DexCyan)
+            ) {
+                Text("SAVE KEY", color = Color.Black, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Color.Gray, fontFamily = FontFamily.Monospace)
+            }
+        }
+    )
+}
+
+@Composable
+fun PokedexHeader(isScanning: Boolean, onOpenSettings: () -> Unit) {
     val infiniteTransition = rememberInfiniteTransition(label = "lens")
     val lensAlpha by infiniteTransition.animateFloat(
         initialValue = 0.4f,
@@ -228,16 +315,13 @@ fun PokedexHeader(isScanning: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(listOf(DexCrimson, DexDarkRed))
-            )
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .background(Brush.verticalGradient(listOf(DexCrimson, DexDarkRed)))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Glowing Cyan Sensor Lens
         Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(44.dp)
                 .clip(CircleShape)
                 .background(Color.White)
                 .padding(4.dp)
@@ -247,17 +331,16 @@ fun PokedexHeader(isScanning: Boolean) {
         ) {
             Box(
                 modifier = Modifier
-                    .offset(x = 8.dp, y = 6.dp)
-                    .size(12.dp)
+                    .offset(x = 7.dp, y = 5.dp)
+                    .size(10.dp)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.7f))
             )
         }
 
-        Spacer(modifier = Modifier.width(14.dp))
+        Spacer(modifier = Modifier.width(12.dp))
 
-        // 3 Classic Status LEDs
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             StatusLed(color = Color(0xFFFF5252))
             StatusLed(color = DexAmber)
             StatusLed(color = DexGreen)
@@ -270,8 +353,18 @@ fun PokedexHeader(isScanning: Boolean) {
             color = Color.White,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold,
-            fontSize = 15.sp
+            fontSize = 14.sp
         )
+
+        Spacer(modifier = Modifier.width(6.dp))
+
+        IconButton(onClick = onOpenSettings) {
+            Icon(
+                imageVector = Icons.Default.Settings,
+                contentDescription = "API Key Settings",
+                tint = Color.White
+            )
+        }
     }
 }
 
@@ -279,7 +372,7 @@ fun PokedexHeader(isScanning: Boolean) {
 fun StatusLed(color: Color) {
     Box(
         modifier = Modifier
-            .size(12.dp)
+            .size(11.dp)
             .clip(CircleShape)
             .background(color)
             .border(1.dp, Color.Black.copy(alpha = 0.4f), CircleShape)
@@ -330,7 +423,6 @@ fun ScannerScreen(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // --- POKEDEX VIEWPORT WITH LASER SCAN ANIMATION ---
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -343,7 +435,7 @@ fun ScannerScreen(
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Scanned Plant",
+                    contentDescription = "Scanned Specimen",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
@@ -372,7 +464,6 @@ fun ScannerScreen(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        // --- SCAN ACTION BUTTON ---
         Button(
             onClick = onLaunchCamera,
             colors = ButtonDefaults.buttonColors(containerColor = DexCrimson),
@@ -393,10 +484,14 @@ fun ScannerScreen(
 
         if (errorMessage != null) {
             Spacer(modifier = Modifier.height(12.dp))
-            Text(text = errorMessage, color = Color(0xFFFF5252), fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+            Text(
+                text = errorMessage,
+                color = Color(0xFFFF5252),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp
+            )
         }
 
-        // --- POKEDEX DATA READOUT CARD ---
         if (plant != null && !isScanning) {
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -418,7 +513,8 @@ fun ScannerScreen(
                         color = DexCyan,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 18.sp
+                        fontSize = 18.sp,
+                        modifier = Modifier.weight(1f)
                     )
                     IconButton(onClick = {
                         onSpeak("${plant.commonName}. Local name: ${plant.localName}. ${plant.dexDescription}")
@@ -436,7 +532,6 @@ fun ScannerScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Type Badge + Health Score Pill
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Surface(
                         color = DexCyan.copy(alpha = 0.15f),
@@ -462,7 +557,7 @@ fun ScannerScreen(
                             fontFamily = FontFamily.Monospace,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                                 )
                     }
                 }
 
@@ -477,7 +572,6 @@ fun ScannerScreen(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Action Buttons: Diagnose & Care vs Add to Balcony
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -504,7 +598,6 @@ fun ScannerScreen(
                     }
                 }
 
-                // Expandable Health & Care Plan Section
                 AnimatedVisibility(visible = showHealthPanel) {
                     Column(
                         modifier = Modifier
@@ -531,7 +624,7 @@ fun ScannerScreen(
                             color = DexGreen,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
-                                                      fontSize = 12.sp
+                            fontSize = 12.sp
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(text = plant.careRoutine, color = Color.White, fontSize = 13.sp)
@@ -557,8 +650,6 @@ fun PokedexLaserOverlay() {
 
     Canvas(modifier = Modifier.fillMaxSize()) {
         val yPos = size.height * scanLineY
-
-        // Cyber Grid Lines
         val step = 35.dp.toPx()
         var x = 0f
         while (x < size.width) {
@@ -570,8 +661,6 @@ fun PokedexLaserOverlay() {
             )
             x += step
         }
-
-        // Glowing Laser Sweep
         drawLine(
             color = DexCyan,
             start = Offset(0f, yPos),
@@ -638,38 +727,75 @@ fun BalconyScreen(
     }
 }
 
-// --- GEMINI VISION AI CALL ---
-suspend fun analyzePlantWithGemini(bitmap: Bitmap, nextDexNum: Int): Result<PlantEntry> {
-    return try {
-        val model = GenerativeModel(
-            modelName = "gemini-2.5-flash",
-            apiKey = BuildConfig.GEMINI_API_KEY
-        )
+// --- DIRECT GEMINI REST API CALL (CRASH-FREE) ---
+suspend fun analyzePlantWithGeminiRest(
+    bitmap: Bitmap,
+    nextDexNum: Int,
+    apiKey: String
+): Result<PlantEntry> = withContext(Dispatchers.IO) {
+    try {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+        val base64Image = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
 
         val prompt = """
-            Analyze this plant or tree image like a futuristic botanical Pokedex.
+            Analyze this image like a futuristic botanical Pokedex.
+            (If it is not a plant, playfully classify the object as an Artificial/Household Mimic specimen).
             Respond ONLY with a valid raw JSON object (no markdown fences) using these exact keys:
             {
               "commonName": "English common name",
               "localName": "Indian local name (Hindi / Marathi) and regional name",
               "scientificName": "Latin botanical name",
-              "plantType": "Elemental style type e.g. FLOWER / MEDICINAL / FOLIAGE / SUCCULENT",
-              "dexDescription": "2-sentence Pokedex style encyclopedia entry describing the plant and its traits.",
+              "plantType": "Elemental style type e.g. FLOWER / MEDICINAL / FOLIAGE / SYNTHETIC",
+              "dexDescription": "2-sentence Pokedex style encyclopedia entry describing the specimen and its traits.",
               "healthStatus": "Thriving, Mild Stress, or Needs Attention",
               "healthScore": 85,
-              "healthAdvice": "Specific visible diagnosis (leaf color, hydration, pests) and how to boost its health.",
-              "careRoutine": "Bullet-style watering schedule, sunlight hours, soil mix, and fertilizer plan."
+              "healthAdvice": "Specific visible diagnosis and how to boost its health.",
+              "careRoutine": "Watering schedule, sunlight hours, soil mix, and fertilizer plan."
             }
         """.trimIndent()
 
-        val response = model.generateContent(
-            content {
-                image(bitmap)
-                text(prompt)
-            }
-        )
+        val payload = JSONObject().apply {
+            put("contents", JSONArray().put(
+                JSONObject().put("parts", JSONArray().apply {
+                    put(JSONObject().put("text", prompt))
+                    put(JSONObject().put("inline_data", JSONObject().apply {
+                        put("mime_type", "image/jpeg")
+                        put("data", base64Image)
+                    }))
+                })
+            ))
+        }
 
-        val rawText = (response.text ?: "{}")
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Content-Type", "application/json")
+            doOutput = true
+            connectTimeout = 20000
+            readTimeout = 20000
+        }
+
+        OutputStreamWriter(conn.outputStream).use { it.write(payload.toString()) }
+
+        val code = conn.responseCode
+        val responseBody = (if (code in 200..299) conn.inputStream else conn.errorStream)
+            ?.bufferedReader()?.use { it.readText() } ?: ""
+
+        if (code !in 200..299) {
+            val errJson = runCatching {
+                JSONObject(responseBody).getJSONObject("error").getString("message")
+            }.getOrDefault("HTTP $code: $responseBody")
+            return@withContext Result.failure(Exception("Gemini API Error: $errJson"))
+        }
+
+        val root = JSONObject(responseBody)
+        val rawText = root.getJSONArray("candidates")
+            .getJSONObject(0)
+            .getJSONObject("content")
+            .getJSONArray("parts")
+            .getJSONObject(0)
+            .getString("text")
             .replace("```json", "")
             .replace("```", "")
             .trim()
@@ -696,7 +822,20 @@ suspend fun analyzePlantWithGemini(bitmap: Bitmap, nextDexNum: Int): Result<Plan
     }
 }
 
-// --- LOCAL BALCONY STORAGE ---
+// --- API KEY & BALCONY STORAGE ---
+fun getActiveApiKey(context: Context): String {
+    val saved = context.getSharedPreferences("floradex_prefs", Context.MODE_PRIVATE)
+        .getString("custom_api_key", "") ?: ""
+    return if (saved.isNotBlank()) saved else BuildConfig.GEMINI_API_KEY
+}
+
+fun saveApiKey(context: Context, key: String) {
+    context.getSharedPreferences("floradex_prefs", Context.MODE_PRIVATE)
+        .edit()
+        .putString("custom_api_key", key)
+        .apply()
+}
+
 fun saveBalconyPlants(context: Context, plants: List<PlantEntry>) {
     val array = JSONArray()
     plants.forEach { p ->
